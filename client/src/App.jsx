@@ -21,7 +21,7 @@ function App() {
         <div className="app-container">
             <h1 className="glow-text">📈 Mystic Trend Oracle</h1>
             <div className="filters">
-                {/* Future filter UI */}
+                {/* Filters coming soon */}
             </div>
             <div className="grid">
                 {trends.length > 0 ? (
@@ -30,9 +30,11 @@ function App() {
                             <h2>{trend.name}</h2>
                             <p><strong>Score:</strong> {trend.score}</p>
                             <p><strong>Stage:</strong> {trend.stage}</p>
-                            <p><strong>Summary:</strong></p>
-                            <div className="summary-block">{trend.summary}</div>
-                            {trend.examples && (
+                            <div className="summary-block">
+                                <p><strong>Summary:</strong></p>
+                                <p>{trend.summary}</p>
+                            </div>
+                            {trend.examples && trend.examples.length > 0 && (
                                 <div className="examples">
                                     <p><strong>Examples:</strong></p>
                                     <ul>
