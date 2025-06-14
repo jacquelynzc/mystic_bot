@@ -18,6 +18,8 @@ openai_api_key = os.getenv("OPENAI_API_KEY")
 # Initialize OpenAI client
 client = OpenAI(api_key=openai_api_key)
 
+BASE_URL = "https://www.tiktok.com"
+
 def ensure_db_schema(cursor):
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trends (
@@ -40,7 +42,9 @@ def ensure_db_schema(cursor):
         except sqlite3.OperationalError:
             pass
 
-def ensure_history_schema(cursor):
+def ensure_history_schema():
+    conn = sqlite3.connect(history_db_path)
+    cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trend_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +57,8 @@ def ensure_history_schema(cursor):
             comments TEXT
         )
     """)
+    conn.commit()
+    conn.close()
 
 def scrape_tiktok_discover(headless=False):
     print(f"\U0001F310 Scraping TikTok Discover... (headless={headless})")
@@ -62,7 +68,7 @@ def scrape_tiktok_discover(headless=False):
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=headless)
             page = browser.new_page()
-            page.goto("https://www.tiktok.com/discover", timeout=15000)
+            page.goto(f"{BASE_URL}/discover", timeout=15000)
             print("⌛ Waiting for page to load...")
             page.wait_for_timeout(5000)
 
@@ -75,7 +81,8 @@ def scrape_tiktok_discover(headless=False):
 
             for item in items:
                 name = item.inner_text().strip().replace("#", "")
-                url = item.get_attribute("href")
+                href = item.get_attribute("href")
+                url = href if href.startswith("http") else f"{BASE_URL}{href}"
                 views = item.query_selector("div[data-e2e='browse-video-views']")
                 view_count = views.inner_text().strip() if views else None
                 if name and name not in seen:
@@ -151,7 +158,7 @@ def save_trends_to_db(trends, cursor, conn):
     ensure_db_schema(cursor)
     history_conn = sqlite3.connect(history_db_path)
     history_cursor = history_conn.cursor()
-    ensure_history_schema(history_cursor)
+    ensure_history_schema()
 
     for trend in trends:
         summary, examples = generate_summary_and_examples(trend["name"], trend.get("snippet", ""))
@@ -186,21 +193,15 @@ def save_trends_to_db(trends, cursor, conn):
                     likes=excluded.likes,
                     comments=excluded.comments
             """, trend_data)
+            print(f"✅ Saved trend: {trend['name']}")
 
             history_cursor.execute("""
                 INSERT INTO trend_history (name, timestamp, score, stage, views, likes, comments)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
-                trend["name"],
-                datetime.utcnow().isoformat(),
-                score,
-                stage,
-                trend.get("views"),
-                trend.get("likes"),
-                trend.get("comments")
+                trend["name"], datetime.utcnow().isoformat(), score, stage, trend.get("views"), trend.get("likes"), trend.get("comments")
             ))
 
-            print(f"✅ Saved trend: {trend['name']}")
         except sqlite3.OperationalError as e:
             print(f"❌ DB Error for trend '{trend['name']}': {e}")
 
