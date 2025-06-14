@@ -1,5 +1,4 @@
-import React from "react";
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import "./App.css";
 
 function App() {
@@ -31,10 +30,23 @@ function App() {
                             <h2>{trend.name}</h2>
                             <p><strong>Score:</strong> {trend.score}</p>
                             <p><strong>Stage:</strong> {trend.stage}</p>
-                            <p><strong>Summary:</strong> {trend.summary}</p>
-                            <a href={trend.url} target="_blank" rel="noopener noreferrer">
-                                <button className="view-source-btn">View Source</button>
-                            </a>
+                            <p><strong>Summary:</strong></p>
+                            <div className="summary-block">{trend.summary}</div>
+                            {trend.examples && (
+                                <div className="examples">
+                                    <p><strong>Examples:</strong></p>
+                                    <ul>
+                                        {trend.examples.map((example, idx) => (
+                                            <li key={idx}>{example}</li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+                            {trend.url && (
+                                <a href={trend.url} target="_blank" rel="noopener noreferrer">
+                                    <button className="view-source-btn">View Source</button>
+                                </a>
+                            )}
                         </div>
                     ))
                 ) : (

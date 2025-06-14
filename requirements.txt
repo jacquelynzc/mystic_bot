@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+aiofiles
+python-dotenv
+openai
+playwright
+httpx
+Jinja2
+python-multipart
+
