@@ -86,7 +86,7 @@ def scrape_tiktok_discover(headless=False):
                 views = item.query_selector("div[data-e2e='browse-video-views']")
                 view_count = views.inner_text().strip() if views else None
                 if name and name not in seen:
-                    snippet, likes, comments = scrape_tag_snippet(page, url)
+                    snippet, likes, comments = scrape_tag_snippet(browser, url)
                     trends.append({
                         "name": name,
                         "url": url,
@@ -105,13 +105,24 @@ def scrape_tiktok_discover(headless=False):
     print(f"✅ Scraped {len(trends)} trend(s).")
     return trends
 
-def scrape_tag_snippet(page, url):
+def scrape_tag_snippet(browser, url):
     try:
-        page.goto(url, timeout=10000)
-        page.wait_for_timeout(3000)
-        captions = page.locator("div[data-e2e='browse-video-desc']").all_inner_texts()
-        likes = page.locator("strong[data-e2e='like-count']").first.inner_text(timeout=3000) or ""
-        comments = page.locator("strong[data-e2e='comment-count']").first.inner_text(timeout=3000) or ""
+        tag_page = browser.new_page()
+        tag_page.goto(url, timeout=15000)
+        tag_page.wait_for_timeout(4000)
+
+        captions = tag_page.locator("div[data-e2e='browse-video-desc']").all_inner_texts()
+        try:
+            likes = tag_page.locator("strong[data-e2e='like-count']").first.inner_text(timeout=5000)
+        except Exception:
+            likes = "N/A"
+
+        try:
+            comments = tag_page.locator("strong[data-e2e='comment-count']").first.inner_text(timeout=5000)
+        except Exception:
+            comments = "N/A"
+
+        tag_page.close()
         return " | ".join(captions[:3]) if captions else "No preview", likes, comments
     except Exception as e:
         print(f"⚠️ Snippet scrape error: {e}")
