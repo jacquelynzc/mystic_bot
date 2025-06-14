@@ -239,4 +239,17 @@ def run_bot():
         return
 
     print("💾 Saving to local database...")
-    con
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    save_trends_to_db(trends, cursor, conn)
+    conn.close()
+    print("✅ All done!")
+
+
+if __name__ == "__main__":
+    run_bot()
+    scheduler = BlockingScheduler()
+    scheduler.add_job(run_bot, 'interval', hours=1)
+    print("🔁 Scheduler started. Scraping every hour.")
+    scheduler.start()
+
