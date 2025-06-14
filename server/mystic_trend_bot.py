@@ -130,24 +130,21 @@ def scrape_tag_snippet(browser, url):
 
 def generate_summary_and_examples(trend_name, snippet):
     prompt = (
-        f"You're a cultural critic with elite taste and a blunt-but-brilliant edge. TikTok's #{trend_name} is trending. "
-        f"Here's a glimpse into the content: {snippet}\n\n"
-        "In your effortless cool-girl tone, break it down in 1 sharp paragraph. Is this trend a passing gimmick or built to last? "
-        "Add 2–3 content ideas (in bullet format) for creators to use now while it’s hot. Be witty, honest, and avoid generic lines."
+        f"You're a sharp, slightly elitist trend-savvy cultural critic with Gen Z wit and NYC edge. "
+        f"TikTok's #{trend_name} is trending. Here's a sample of the content: {snippet}\n\n"
+        "Give me a short, smart summary of the trend in 2-3 sentences—make it human, sarcastic (but not cheesy), and insightful. "
+        "Skip suggestions. Don't be a cheerleader. You’re not trying to be cool—you just are. Assume the reader knows TikTok but isn’t drinking the Kool-Aid. Avoid disclaimers about being an AI."
     )
     try:
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a culturally savvy trend analyst with grounded wit and timeless taste. You never repeat yourself and you never lie to hype."},
+                {"role": "system", "content": "You are a cultural trend analyst who thinks like a NYC creative director and talks like a laid-back LA it-girl. You decode viral trends with ease, always clocking what’s legit vs. cringe."},
                 {"role": "user", "content": prompt},
             ]
         )
         full_text = response.choices[0].message.content.strip()
-        lines = full_text.split("\n")
-        summary = lines[0].strip()
-        examples = [line.strip("-• ") for line in lines[1:] if line.strip()]
-        return summary, examples[:3]
+        return full_text, []
     except Exception as e:
         print(f"⚠️ OpenAI API error: {e}")
         return "Summary unavailable.", []
