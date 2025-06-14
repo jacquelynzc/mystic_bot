@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import time
+from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
 from playwright.sync_api import sync_playwright
@@ -11,6 +12,7 @@ load_dotenv()
 
 # Constants
 db_path = os.path.join(os.path.dirname(__file__), "trends.db")
+history_db_path = os.path.join(os.path.dirname(__file__), "trend_history.db")
 openai_api_key = os.getenv("OPENAI_API_KEY")
 
 # Initialize OpenAI client
@@ -38,6 +40,20 @@ def ensure_db_schema(cursor):
         except sqlite3.OperationalError:
             pass
 
+def ensure_history_schema(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trend_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            timestamp TEXT,
+            score INTEGER,
+            stage TEXT,
+            views TEXT,
+            likes TEXT,
+            comments TEXT
+        )
+    """)
+
 def scrape_tiktok_discover(headless=False):
     print(f"\U0001F310 Scraping TikTok Discover... (headless={headless})")
     trends = []
@@ -50,7 +66,7 @@ def scrape_tiktok_discover(headless=False):
             print("⌛ Waiting for page to load...")
             page.wait_for_timeout(5000)
 
-            for _ in range(10):
+            for _ in range(15):
                 page.mouse.wheel(0, 1500)
                 page.wait_for_timeout(2000)
 
@@ -96,24 +112,23 @@ def scrape_tag_snippet(page, url):
 
 def generate_summary_and_examples(trend_name, snippet):
     prompt = (
-        f"You're an elite-level trend forecaster with an it-girl edge. The TikTok hashtag #{trend_name} is trending. "
-        f"Here's a snippet from current posts: {snippet}\n\n"
-        "Analyze in your signature voice: casually iconic, zillennial sarcasm meets timeless taste. "
-        "Keep it smart, sharp, grounded, and a little savage. Say whether it's giving viral longevity or just a flash trend. "
-        "Suggest 2–3 content ideas for creators to ride this wave before it crashes."
+        f"You're a cultural critic with elite taste and a blunt-but-brilliant edge. TikTok's #{trend_name} is trending. "
+        f"Here's a glimpse into the content: {snippet}\n\n"
+        "In your effortless cool-girl tone, break it down in 1 sharp paragraph. Is this trend a passing gimmick or built to last? "
+        "Add 2–3 content ideas (in bullet format) for creators to use now while it’s hot. Be witty, honest, and avoid generic lines."
     )
     try:
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a cultural critic and social media trend forecaster with a grounded, witty, effortlessly cool voice."},
+                {"role": "system", "content": "You are a culturally savvy trend analyst with grounded wit and timeless taste. You never repeat yourself and you never lie to hype."},
                 {"role": "user", "content": prompt},
             ]
         )
         full_text = response.choices[0].message.content.strip()
-        parts = full_text.split("\n")
-        summary = parts[0]
-        examples = [line.strip("-• ") for line in parts[1:] if line.strip()]
+        lines = full_text.split("\n")
+        summary = lines[0].strip()
+        examples = [line.strip("-• ") for line in lines[1:] if line.strip()]
         return summary, examples[:3]
     except Exception as e:
         print(f"⚠️ OpenAI API error: {e}")
@@ -134,6 +149,10 @@ def determine_stage(score):
 
 def save_trends_to_db(trends, cursor, conn):
     ensure_db_schema(cursor)
+    history_conn = sqlite3.connect(history_db_path)
+    history_cursor = history_conn.cursor()
+    ensure_history_schema(history_cursor)
+
     for trend in trends:
         summary, examples = generate_summary_and_examples(trend["name"], trend.get("snippet", ""))
         score = score_trend(trend["name"])
@@ -154,14 +173,40 @@ def save_trends_to_db(trends, cursor, conn):
 
         try:
             cursor.execute("""
-                INSERT OR REPLACE INTO trends (name, summary, score, stage, examples, url, snippet, views, likes, comments)
+                INSERT INTO trends (name, summary, score, stage, examples, url, snippet, views, likes, comments)
                 VALUES (:name, :summary, :score, :stage, :examples, :url, :snippet, :views, :likes, :comments)
+                ON CONFLICT(name) DO UPDATE SET
+                    summary=excluded.summary,
+                    score=excluded.score,
+                    stage=excluded.stage,
+                    examples=excluded.examples,
+                    url=excluded.url,
+                    snippet=excluded.snippet,
+                    views=excluded.views,
+                    likes=excluded.likes,
+                    comments=excluded.comments
             """, trend_data)
+
+            history_cursor.execute("""
+                INSERT INTO trend_history (name, timestamp, score, stage, views, likes, comments)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                trend["name"],
+                datetime.utcnow().isoformat(),
+                score,
+                stage,
+                trend.get("views"),
+                trend.get("likes"),
+                trend.get("comments")
+            ))
+
             print(f"✅ Saved trend: {trend['name']}")
         except sqlite3.OperationalError as e:
             print(f"❌ DB Error for trend '{trend['name']}': {e}")
 
     conn.commit()
+    history_conn.commit()
+    history_conn.close()
 
 def run_bot():
     trends = scrape_tiktok_discover(headless=False)
