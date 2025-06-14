@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from playwright.sync_api import sync_playwright
 from apscheduler.schedulers.blocking import BlockingScheduler
-import requests
 
 # Load environment variables
 load_dotenv()
@@ -13,8 +12,6 @@ load_dotenv()
 # Constants
 db_path = os.path.join(os.path.dirname(__file__), "trends.db")
 openai_api_key = os.getenv("OPENAI_API_KEY")
-notion_token = os.getenv("NOTION_API_KEY")
-notion_db_id = os.getenv("NOTION_DATABASE_ID")
 
 # Initialize OpenAI client
 client = OpenAI(api_key=openai_api_key)
@@ -28,16 +25,20 @@ def ensure_db_schema(cursor):
             score INTEGER,
             stage TEXT,
             examples TEXT,
-            url TEXT
+            url TEXT,
+            snippet TEXT,
+            views TEXT,
+            likes TEXT,
+            comments TEXT
         )
     """)
-    for column in ["examples", "url"]:
+    for column in ["examples", "url", "snippet", "views", "likes", "comments"]:
         try:
             cursor.execute(f"ALTER TABLE trends ADD COLUMN {column} TEXT")
         except sqlite3.OperationalError:
             pass
 
-def scrape_tiktok_discover(headless=True):
+def scrape_tiktok_discover(headless=False):
     print(f"\U0001F310 Scraping TikTok Discover... (headless={headless})")
     trends = []
     seen = set()
@@ -49,8 +50,8 @@ def scrape_tiktok_discover(headless=True):
             print("⌛ Waiting for page to load...")
             page.wait_for_timeout(5000)
 
-            for _ in range(5):
-                page.mouse.wheel(0, 1000)
+            for _ in range(10):
+                page.mouse.wheel(0, 1500)
                 page.wait_for_timeout(2000)
 
             items = page.query_selector_all("a[href*='/tag/']")
@@ -59,8 +60,18 @@ def scrape_tiktok_discover(headless=True):
             for item in items:
                 name = item.inner_text().strip().replace("#", "")
                 url = item.get_attribute("href")
+                views = item.query_selector("div[data-e2e='browse-video-views']")
+                view_count = views.inner_text().strip() if views else None
                 if name and name not in seen:
-                    trends.append({"name": name, "url": url})
+                    snippet, likes, comments = scrape_tag_snippet(page, url)
+                    trends.append({
+                        "name": name,
+                        "url": url,
+                        "snippet": snippet,
+                        "views": view_count,
+                        "likes": likes,
+                        "comments": comments
+                    })
                     seen.add(name)
                 if len(trends) >= 50:
                     break
@@ -71,9 +82,25 @@ def scrape_tiktok_discover(headless=True):
     print(f"✅ Scraped {len(trends)} trend(s).")
     return trends
 
-def generate_summary_and_examples(trend_name):
+def scrape_tag_snippet(page, url):
+    try:
+        page.goto(url, timeout=10000)
+        page.wait_for_timeout(3000)
+        captions = page.locator("div[data-e2e='browse-video-desc']").all_inner_texts()
+        likes = page.locator("strong[data-e2e='like-count']").first.inner_text(timeout=3000) or ""
+        comments = page.locator("strong[data-e2e='comment-count']").first.inner_text(timeout=3000) or ""
+        return " | ".join(captions[:3]) if captions else "No preview", likes, comments
+    except Exception as e:
+        print(f"⚠️ Snippet scrape error: {e}")
+    return "No content preview available.", "", ""
+
+def generate_summary_and_examples(trend_name, snippet):
     prompt = (
-        f"You are an elite-level trend forecaster with an it-girl edge. Analyze the TikTok hashtag #{trend_name} in your signature voice: casual but razor-sharp, zillennial sarcasm meets grounded taste. Keep it real, mock trends when deserved (never cruel), and explain why it's gaining traction. Highlight if it's a flash-in-the-pan or has real staying power. Give 2–3 creative video ideas for creators to hop on in a way that feels relevant and fresh."
+        f"You're an elite-level trend forecaster with an it-girl edge. The TikTok hashtag #{trend_name} is trending. "
+        f"Here's a snippet from current posts: {snippet}\n\n"
+        "Analyze in your signature voice: casually iconic, zillennial sarcasm meets timeless taste. "
+        "Keep it smart, sharp, grounded, and a little savage. Say whether it's giving viral longevity or just a flash trend. "
+        "Suggest 2–3 content ideas for creators to ride this wave before it crashes."
     )
     try:
         response = client.chat.completions.create(
@@ -105,32 +132,10 @@ def determine_stage(score):
     else:
         return "Niche"
 
-def post_to_notion(trend):
-    headers = {
-        "Authorization": f"Bearer {notion_token}",
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28"
-    }
-    data = {
-        "parent": {"database_id": notion_db_id},
-        "properties": {
-            "Name": {"title": [{"text": {"content": trend['name']}}]},
-            "Summary": {"rich_text": [{"text": {"content": trend['summary']}}]},
-            "Score": {"number": trend['score']},
-            "Stage": {"select": {"name": trend['stage']}}
-        }
-    }
-    try:
-        response = requests.post("https://api.notion.com/v1/pages", headers=headers, json=data)
-        response.raise_for_status()
-        print(f"✅ Posted to Notion: {trend['name']}")
-    except Exception as e:
-        print(f"❌ Notion post failed: {e}")
-
 def save_trends_to_db(trends, cursor, conn):
     ensure_db_schema(cursor)
     for trend in trends:
-        summary, examples = generate_summary_and_examples(trend["name"])
+        summary, examples = generate_summary_and_examples(trend["name"], trend.get("snippet", ""))
         score = score_trend(trend["name"])
         stage = determine_stage(score)
 
@@ -140,23 +145,26 @@ def save_trends_to_db(trends, cursor, conn):
             "score": score,
             "stage": stage,
             "examples": str(examples),
-            "url": trend.get("url")
+            "url": trend.get("url"),
+            "snippet": trend.get("snippet"),
+            "views": trend.get("views"),
+            "likes": trend.get("likes"),
+            "comments": trend.get("comments")
         }
 
         try:
             cursor.execute("""
-                INSERT OR REPLACE INTO trends (name, summary, score, stage, examples, url)
-                VALUES (:name, :summary, :score, :stage, :examples, :url)
+                INSERT OR REPLACE INTO trends (name, summary, score, stage, examples, url, snippet, views, likes, comments)
+                VALUES (:name, :summary, :score, :stage, :examples, :url, :snippet, :views, :likes, :comments)
             """, trend_data)
             print(f"✅ Saved trend: {trend['name']}")
-            post_to_notion(trend_data)
         except sqlite3.OperationalError as e:
             print(f"❌ DB Error for trend '{trend['name']}': {e}")
 
     conn.commit()
 
 def run_bot():
-    trends = scrape_tiktok_discover(headless=True)
+    trends = scrape_tiktok_discover(headless=False)
     if not trends:
         print("⚠️ No trends found. Exiting.")
         return
