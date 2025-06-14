@@ -20,6 +20,7 @@ client = OpenAI(api_key=openai_api_key)
 
 BASE_URL = "https://www.tiktok.com"
 
+
 def ensure_db_schema(cursor):
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trends (
@@ -42,6 +43,7 @@ def ensure_db_schema(cursor):
         except sqlite3.OperationalError:
             pass
 
+
 def ensure_history_schema():
     conn = sqlite3.connect(history_db_path)
     cursor = conn.cursor()
@@ -59,6 +61,7 @@ def ensure_history_schema():
     """)
     conn.commit()
     conn.close()
+
 
 def scrape_tiktok_discover(headless=False):
     print(f"\U0001F310 Scraping TikTok Discover... (headless={headless})")
@@ -105,6 +108,7 @@ def scrape_tiktok_discover(headless=False):
     print(f"✅ Scraped {len(trends)} trend(s).")
     return trends
 
+
 def scrape_tag_snippet(browser, url):
     try:
         tag_page = browser.new_page()
@@ -128,6 +132,7 @@ def scrape_tag_snippet(browser, url):
         print(f"⚠️ Snippet scrape error: {e}")
     return "No content preview available.", "", ""
 
+
 def generate_summary_and_examples(trend_name, snippet):
     prompt = (
         f"You're a sharp, slightly elitist trend-savvy cultural critic with Gen Z wit and NYC edge. "
@@ -149,8 +154,10 @@ def generate_summary_and_examples(trend_name, snippet):
         print(f"⚠️ OpenAI API error: {e}")
         return "Summary unavailable.", []
 
+
 def score_trend(trend_name):
     return len(trend_name) * 7 % 100
+
 
 def determine_stage(score):
     if score > 75:
@@ -162,6 +169,7 @@ def determine_stage(score):
     else:
         return "Niche"
 
+
 def save_trends_to_db(trends, cursor, conn):
     ensure_db_schema(cursor)
     history_conn = sqlite3.connect(history_db_path)
@@ -169,6 +177,12 @@ def save_trends_to_db(trends, cursor, conn):
     ensure_history_schema()
 
     for trend in trends:
+        cursor.execute("SELECT snippet FROM trends WHERE name = ?", (trend["name"],))
+        existing = cursor.fetchone()
+        if existing and existing[0] == trend.get("snippet"):
+            print(f"⏩ Skipping unchanged trend: {trend['name']}")
+            continue
+
         summary, examples = generate_summary_and_examples(trend["name"], trend.get("snippet", ""))
         score = score_trend(trend["name"])
         stage = determine_stage(score)
@@ -217,6 +231,7 @@ def save_trends_to_db(trends, cursor, conn):
     history_conn.commit()
     history_conn.close()
 
+
 def run_bot():
     trends = scrape_tiktok_discover(headless=False)
     if not trends:
@@ -224,16 +239,4 @@ def run_bot():
         return
 
     print("💾 Saving to local database...")
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    save_trends_to_db(trends, cursor, conn)
-    conn.close()
-    print("✅ All done!")
-
-if __name__ == "__main__":
-    scheduler = BlockingScheduler()
-    scheduler.add_job(run_bot, 'interval', hours=1)
-    print("🔁 Scheduler started. Scraping every hour.")
-    run_bot()
-    scheduler.start()
-
+    con
