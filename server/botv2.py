@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 # Load environment variables
@@ -22,7 +22,6 @@ BASE_URL = "https://ads.tiktok.com/business/creativecenter/inspiration/popular/h
 BRAVE_EXECUTABLE_PATH = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 USER_DATA_DIR = "/tmp/mystic_brave_profile"
 
-
 def ensure_db_schema(cursor):
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trends (
@@ -36,15 +35,20 @@ def ensure_db_schema(cursor):
             snippet TEXT,
             views TEXT,
             likes TEXT,
-            comments TEXT
+            comments TEXT,
+            timestamp TEXT,
+            leaderboard_rank INTEGER
         )
     """)
-    for column in ["examples", "url", "snippet", "views", "likes", "comments"]:
+    for column, col_type in [
+        ("examples", "TEXT"), ("url", "TEXT"), ("snippet", "TEXT"),
+        ("views", "TEXT"), ("likes", "TEXT"), ("comments", "TEXT"),
+        ("timestamp", "TEXT"), ("leaderboard_rank", "INTEGER")
+    ]:
         try:
-            cursor.execute(f"ALTER TABLE trends ADD COLUMN {column} TEXT")
+            cursor.execute(f"ALTER TABLE trends ADD COLUMN {column} {col_type}")
         except sqlite3.OperationalError:
             pass
-
 
 def ensure_history_schema():
     conn = sqlite3.connect(history_db_path)
@@ -58,15 +62,29 @@ def ensure_history_schema():
             stage TEXT,
             views TEXT,
             likes TEXT,
-            comments TEXT
+            comments TEXT,
+            leaderboard_rank INTEGER
         )
     """)
     conn.commit()
     conn.close()
 
+def scroll_until_loaded(page, target_count=100, max_scrolls=60, delay=0.95):
+    for i in range(max_scrolls):
+        page.mouse.wheel(0, 500)
+        time.sleep(delay)
+        try:
+            card_count = page.locator("a.CardPc_container___oNb0").count()
+            print(f"🌀 Scroll {i+1}/{max_scrolls} — Cards found: {card_count}")
+            if card_count >= target_count:
+                print("✅ Required number of trend cards loaded.")
+                break
+        except TimeoutError:
+            print("⚠️ Timeout when counting cards. Retrying.")
+            continue
 
 def scrape_tiktok_creative_center():
-    print(f"\U0001F310 Scraping TikTok Creative Center... (headless=False)")
+    print(f"🌐 Scraping TikTok Creative Center... (headless=False)")
     trends = []
     try:
         with sync_playwright() as p:
@@ -77,24 +95,24 @@ def scrape_tiktok_creative_center():
                 args=["--disable-blink-features=AutomationControlled", "--start-maximized"]
             )
             page = context.new_page()
-            print("🌐 Navigating to TikTok Creative Center...")
+            print("🌍 Navigating to TikTok Creative Center...")
             page.goto(BASE_URL, timeout=60000)
             print("⌛ Waiting for page to load...")
-            page.wait_for_timeout(10000)
+            page.wait_for_timeout(3000)
 
-            for _ in range(20):
-                page.mouse.wheel(0, 2000)
-                time.sleep(1.5)
+            print("🔄 Scrolling to load all trends...")
+            scroll_until_loaded(page)
 
             cards = page.locator("a.CardPc_container___oNb0").all()
             print(f"🔍 Found {len(cards)} trend cards.")
 
-            for card in cards:
+            for idx, card in enumerate(cards):
                 try:
                     title = card.locator(".CardPc_titleText__RYOWo").inner_text(timeout=3000).strip().replace("#", "")
                     views = card.locator(".CardPc_itemValue__XGDmG").nth(0).inner_text(timeout=3000).strip()
                     url = card.get_attribute("href")
                     full_url = f"https://ads.tiktok.com{url}" if url else ""
+                    rank = card.locator(".RankingStatus_rankingIndex__ZMDrH").inner_text(timeout=3000).strip()
 
                     trends.append({
                         "name": title,
@@ -102,9 +120,11 @@ def scrape_tiktok_creative_center():
                         "views": views,
                         "snippet": "",
                         "likes": "",
-                        "comments": ""
+                        "comments": "",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "leaderboard_rank": int(rank) if rank.isdigit() else None
                     })
-                    print(f"✅ Parsed trend: {title}")
+                    print(f"✅ Parsed trend: {title} (Rank {rank})")
                 except Exception as e:
                     print(f"⚠️ Error parsing trend card: {e}")
 
@@ -114,7 +134,6 @@ def scrape_tiktok_creative_center():
 
     print(f"✅ Scraped {len(trends)} trend(s).")
     return trends
-
 
 def generate_summary_and_examples(trend_name, snippet):
     prompt = (
@@ -131,16 +150,13 @@ def generate_summary_and_examples(trend_name, snippet):
                 {"role": "user", "content": prompt},
             ]
         )
-        full_text = response.choices[0].message.content.strip()
-        return full_text, []
+        return response.choices[0].message.content.strip(), []
     except Exception as e:
         print(f"⚠️ OpenAI API error: {e}")
         return "Summary unavailable.", []
 
-
 def score_trend(trend_name):
     return len(trend_name) * 7 % 100
-
 
 def determine_stage(score):
     if score > 75:
@@ -149,9 +165,7 @@ def determine_stage(score):
         return "Rising"
     elif score > 25:
         return "Early"
-    else:
-        return "Niche"
-
+    return "Niche"
 
 def save_trends_to_db(trends, cursor, conn):
     ensure_db_schema(cursor)
@@ -160,60 +174,65 @@ def save_trends_to_db(trends, cursor, conn):
     ensure_history_schema()
 
     for trend in trends:
-        cursor.execute("SELECT snippet FROM trends WHERE name = ?", (trend["name"],))
-        existing = cursor.fetchone()
-        if existing and existing[0] == trend.get("snippet"):
-            print(f"⏩ Skipping unchanged trend: {trend['name']}")
-            continue
-
-        summary, examples = generate_summary_and_examples(trend["name"], trend.get("snippet", ""))
         score = score_trend(trend["name"])
         stage = determine_stage(score)
 
-        trend_data = {
-            "name": trend["name"],
-            "summary": summary,
-            "score": score,
-            "stage": stage,
-            "examples": str(examples),
-            "url": trend.get("url"),
-            "snippet": trend.get("snippet"),
-            "views": trend.get("views"),
-            "likes": trend.get("likes"),
-            "comments": trend.get("comments")
-        }
+        cursor.execute("SELECT snippet FROM trends WHERE name = ?", (trend["name"],))
+        existing = cursor.fetchone()
+        is_unchanged = existing and existing[0] == trend.get("snippet")
 
-        try:
-            cursor.execute("""
-                INSERT INTO trends (name, summary, score, stage, examples, url, snippet, views, likes, comments)
-                VALUES (:name, :summary, :score, :stage, :examples, :url, :snippet, :views, :likes, :comments)
-                ON CONFLICT(name) DO UPDATE SET
-                    summary=excluded.summary,
-                    score=excluded.score,
-                    stage=excluded.stage,
-                    examples=excluded.examples,
-                    url=excluded.url,
-                    snippet=excluded.snippet,
-                    views=excluded.views,
-                    likes=excluded.likes,
-                    comments=excluded.comments
-            """, trend_data)
-            print(f"✅ Saved trend: {trend['name']}")
+        if is_unchanged:
+            print(f"⏩ Skipping unchanged trend: {trend['name']}")
+        else:
+            summary, examples = generate_summary_and_examples(trend["name"], trend.get("snippet", ""))
+            trend_data = {
+                "name": trend["name"],
+                "summary": summary,
+                "score": score,
+                "stage": stage,
+                "examples": str(examples),
+                "url": trend.get("url"),
+                "snippet": trend.get("snippet"),
+                "views": trend.get("views"),
+                "likes": trend.get("likes"),
+                "comments": trend.get("comments"),
+                "timestamp": trend.get("timestamp"),
+                "leaderboard_rank": trend.get("leaderboard_rank")
+            }
 
-            history_cursor.execute("""
-                INSERT INTO trend_history (name, timestamp, score, stage, views, likes, comments)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                trend["name"], datetime.utcnow().isoformat(), score, stage, trend.get("views"), trend.get("likes"), trend.get("comments")
-            ))
+            try:
+                cursor.execute("""
+                    INSERT INTO trends (name, summary, score, stage, examples, url, snippet, views, likes, comments, timestamp, leaderboard_rank)
+                    VALUES (:name, :summary, :score, :stage, :examples, :url, :snippet, :views, :likes, :comments, :timestamp, :leaderboard_rank)
+                    ON CONFLICT(name) DO UPDATE SET
+                        summary=excluded.summary,
+                        score=excluded.score,
+                        stage=excluded.stage,
+                        examples=excluded.examples,
+                        url=excluded.url,
+                        snippet=excluded.snippet,
+                        views=excluded.views,
+                        likes=excluded.likes,
+                        comments=excluded.comments,
+                        timestamp=excluded.timestamp,
+                        leaderboard_rank=excluded.leaderboard_rank
+                """, trend_data)
+                print(f"✅ Saved trend: {trend['name']}")
+            except sqlite3.OperationalError as e:
+                print(f"❌ DB Error for trend '{trend['name']}': {e}")
 
-        except sqlite3.OperationalError as e:
-            print(f"❌ DB Error for trend '{trend['name']}': {e}")
+        history_cursor.execute("""
+            INSERT INTO trend_history (name, timestamp, score, stage, views, likes, comments, leaderboard_rank)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            trend["name"], trend["timestamp"], score, stage,
+            trend.get("views"), trend.get("likes"),
+            trend.get("comments"), trend.get("leaderboard_rank")
+        ))
 
     conn.commit()
     history_conn.commit()
     history_conn.close()
-
 
 def run_bot():
     trends = scrape_tiktok_creative_center()
@@ -227,7 +246,6 @@ def run_bot():
     save_trends_to_db(trends, cursor, conn)
     conn.close()
     print("✅ All done!")
-
 
 if __name__ == "__main__":
     run_bot()
