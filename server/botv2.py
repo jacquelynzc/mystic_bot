@@ -22,7 +22,6 @@ BASE_URL = "https://ads.tiktok.com/business/creativecenter/inspiration/popular/h
 BRAVE_EXECUTABLE_PATH = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 USER_DATA_DIR = "/tmp/mystic_brave_profile"
 
-
 def ensure_db_schema(cursor):
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trends (
@@ -210,4 +209,29 @@ def save_trends_to_db(trends, cursor, conn):
             ))
 
         except sqlite3.OperationalError as e:
-            print(f"❌ DB Error for trend '{trend['name
+            print(f"❌ DB Error for trend '{trend['name']}': {e}")
+
+    conn.commit()
+    history_conn.commit()
+    history_conn.close()
+
+def run_bot():
+    trends = scrape_tiktok_creative_center()
+    if not trends:
+        print("⚠️ No trends found. Exiting.")
+        return
+
+    print("💾 Saving to local database...")
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    save_trends_to_db(trends, cursor, conn)
+    conn.close()
+    print("✅ All done!")
+
+if __name__ == "__main__":
+    run_bot()
+    scheduler = BlockingScheduler()
+    scheduler.add_job(run_bot, 'interval', hours=1)
+    print("🔁 Scheduler started. Scraping every hour.")
+    scheduler.start()
+
