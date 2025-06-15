@@ -20,7 +20,10 @@ function App() {
             .catch((error) => console.error("❌ Failed to fetch trends:", error));
     }, []);
 
-    const filteredTrends = trends.filter(trend => filterStage === "all" || trend.stage === filterStage);
+    const filteredTrends = trends.filter(trend => {
+    const stage = trend.stage?.toLowerCase();
+    return filterStage === "all" || stage === filterStage;
+});
     const sortedTrends = [...filteredTrends].sort((a, b) => {
         if (sortBy === "score") return b.score - a.score;
         if (sortBy === "stage") return a.stage.localeCompare(b.stage);
@@ -66,8 +69,22 @@ function App() {
                         <div key={index} className={`card hover-effect stage-${trend.stage}`}>
                             <h2>{trend.name}</h2>
                             <p><strong>🔥 Score:</strong> {trend.score}</p>
-                            <p><strong>⏳ Stage:</strong> {trend.stage}</p>
-                            <div className="summary-block">
+<p>
+  <strong>⏳ Stage:</strong>{" "}
+  {(() => {
+    if (!trend.stage) return "Unknown";
+    const stage = trend.stage.toLowerCase();
+    const stageMap = {
+      early: "🌱 Early",
+      rising: "📈 Rising",
+      niche: "🧬 Niche",
+      exploding: "💥 Exploding",
+    };
+    return stageMap[stage] || trend.stage;
+  })()}
+</p>
+
+<div className="summary-block">
                                 <p><strong>🧠 Summary:</strong></p>
                                 <p>{trend.summary}</p>
                             </div>
