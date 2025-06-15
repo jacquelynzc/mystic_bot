@@ -71,38 +71,30 @@ def scrape_tiktok_creative_center():
                 user_data_dir=USER_DATA_DIR,
                 headless=False,
                 executable_path=BRAVE_EXECUTABLE_PATH,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--start-maximized"
-                ]
+                args=["--disable-blink-features=AutomationControlled", "--start-maximized"]
             )
             page = context.new_page()
             page.goto(BASE_URL, timeout=60000)
             print("⌛ Waiting for page to load...")
             page.wait_for_timeout(8000)
 
-            # Aggressive scroll to simulate user behavior
+            # Scroll to simulate user behavior
             for _ in range(20):
                 page.mouse.wheel(0, 2000)
                 time.sleep(1.5)
 
-            # Save HTML for debug
-            with open("debug_output.html", "w", encoding="utf-8") as f:
-                f.write(page.content())
-
-            # Get all hashtag cards based on updated selectors
-            cards = page.locator("#hashtagItemContainer div[class*=CardPc_detail]").all()
+            cards = page.locator("#hashtagItemContainer").locator("a.CardPc_container___oNb0").all()
             print(f"🔍 Found {len(cards)} trend cards.")
 
             for card in cards:
                 try:
-                    title = card.locator("h3").inner_text().strip()
-                    views = card.locator(".CardPc_number__1l4Z1").first.inner_text().strip()
-                    url = card.locator("a").first.get_attribute("href")
+                    title = card.locator(".CardPc_titleText__RYOWo").inner_text().strip().replace("#", "")
+                    views = card.locator(".CardPc_itemValue__XGDmG").nth(0).inner_text().strip()
+                    url = card.get_attribute("href")
                     full_url = f"https://ads.tiktok.com{url}" if url else ""
 
                     trends.append({
-                        "name": title.replace("#", ""),
+                        "name": title,
                         "url": full_url,
                         "views": views,
                         "snippet": "",
