@@ -22,6 +22,7 @@ BASE_URL = "https://ads.tiktok.com/business/creativecenter/inspiration/popular/h
 BRAVE_EXECUTABLE_PATH = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 USER_DATA_DIR = "/tmp/mystic_brave_profile"
 
+
 def ensure_db_schema(cursor):
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trends (
@@ -44,6 +45,7 @@ def ensure_db_schema(cursor):
         except sqlite3.OperationalError:
             pass
 
+
 def ensure_history_schema():
     conn = sqlite3.connect(history_db_path)
     cursor = conn.cursor()
@@ -62,6 +64,7 @@ def ensure_history_schema():
     conn.commit()
     conn.close()
 
+
 def scrape_tiktok_creative_center():
     print(f"\U0001F310 Scraping TikTok Creative Center... (headless=False)")
     trends = []
@@ -74,22 +77,22 @@ def scrape_tiktok_creative_center():
                 args=["--disable-blink-features=AutomationControlled", "--start-maximized"]
             )
             page = context.new_page()
+            print("🌐 Navigating to TikTok Creative Center...")
             page.goto(BASE_URL, timeout=60000)
             print("⌛ Waiting for page to load...")
-            page.wait_for_timeout(8000)
+            page.wait_for_timeout(10000)
 
-            # Scroll to simulate user behavior
             for _ in range(20):
                 page.mouse.wheel(0, 2000)
                 time.sleep(1.5)
 
-            cards = page.locator("#hashtagItemContainer").locator("a.CardPc_container___oNb0").all()
+            cards = page.locator("a.CardPc_container___oNb0").all()
             print(f"🔍 Found {len(cards)} trend cards.")
 
             for card in cards:
                 try:
-                    title = card.locator(".CardPc_titleText__RYOWo").inner_text().strip().replace("#", "")
-                    views = card.locator(".CardPc_itemValue__XGDmG").nth(0).inner_text().strip()
+                    title = card.locator(".CardPc_titleText__RYOWo").inner_text(timeout=3000).strip().replace("#", "")
+                    views = card.locator(".CardPc_itemValue__XGDmG").nth(0).inner_text(timeout=3000).strip()
                     url = card.get_attribute("href")
                     full_url = f"https://ads.tiktok.com{url}" if url else ""
 
@@ -101,16 +104,17 @@ def scrape_tiktok_creative_center():
                         "likes": "",
                         "comments": ""
                     })
+                    print(f"✅ Parsed trend: {title}")
                 except Exception as e:
                     print(f"⚠️ Error parsing trend card: {e}")
 
             context.close()
-
     except Exception as e:
         print(f"❌ Browser scraping error: {e}")
 
     print(f"✅ Scraped {len(trends)} trend(s).")
     return trends
+
 
 def generate_summary_and_examples(trend_name, snippet):
     prompt = (
@@ -133,8 +137,10 @@ def generate_summary_and_examples(trend_name, snippet):
         print(f"⚠️ OpenAI API error: {e}")
         return "Summary unavailable.", []
 
+
 def score_trend(trend_name):
     return len(trend_name) * 7 % 100
+
 
 def determine_stage(score):
     if score > 75:
@@ -145,6 +151,7 @@ def determine_stage(score):
         return "Early"
     else:
         return "Niche"
+
 
 def save_trends_to_db(trends, cursor, conn):
     ensure_db_schema(cursor)
@@ -207,6 +214,7 @@ def save_trends_to_db(trends, cursor, conn):
     history_conn.commit()
     history_conn.close()
 
+
 def run_bot():
     trends = scrape_tiktok_creative_center()
     if not trends:
@@ -219,6 +227,7 @@ def run_bot():
     save_trends_to_db(trends, cursor, conn)
     conn.close()
     print("✅ All done!")
+
 
 if __name__ == "__main__":
     run_bot()
