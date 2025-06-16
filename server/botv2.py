@@ -160,7 +160,7 @@ def generate_summary_and_examples(trend_name, snippet):
     )
     try:
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a cultural trend analyst who thinks like a NYC creative director and talks like a laid-back LA it-girl. You decode viral trends with ease, always clocking what’s legit vs. cringe."},
                 {"role": "user", "content": prompt},
