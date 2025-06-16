@@ -69,9 +69,9 @@ def ensure_history_schema():
     conn.commit()
     conn.close()
 
-def scroll_until_loaded(page, target_count=100, max_scrolls=60, delay=0.95):
+def scroll_until_loaded(page, target_count=100, max_scrolls=60, delay=1.05):
     for i in range(max_scrolls):
-        page.mouse.wheel(0, 500)
+        page.mouse.wheel(0, 350)
         time.sleep(delay)
         try:
             card_count = page.locator("a.CardPc_container___oNb0").count()
@@ -177,50 +177,54 @@ def save_trends_to_db(trends, cursor, conn):
         score = score_trend(trend["name"])
         stage = determine_stage(score)
 
-        cursor.execute("SELECT snippet FROM trends WHERE name = ?", (trend["name"],))
+        # Check if summary already exists
+        cursor.execute("SELECT summary FROM trends WHERE name = ?", (trend["name"],))
         existing = cursor.fetchone()
-        is_unchanged = existing and existing[0] == trend.get("snippet")
+        summary_exists = existing and existing[0] and len(existing[0].strip()) > 0
 
-        if is_unchanged:
-            print(f"⏩ Skipping unchanged trend: {trend['name']}")
+        if summary_exists:
+            print(f"⏩ Skipping OpenAI for existing trend: {trend['name']}")
+            summary, examples = existing[0], []
         else:
             summary, examples = generate_summary_and_examples(trend["name"], trend.get("snippet", ""))
-            trend_data = {
-                "name": trend["name"],
-                "summary": summary,
-                "score": score,
-                "stage": stage,
-                "examples": str(examples),
-                "url": trend.get("url"),
-                "snippet": trend.get("snippet"),
-                "views": trend.get("views"),
-                "likes": trend.get("likes"),
-                "comments": trend.get("comments"),
-                "timestamp": trend.get("timestamp"),
-                "leaderboard_rank": trend.get("leaderboard_rank")
-            }
 
-            try:
-                cursor.execute("""
-                    INSERT INTO trends (name, summary, score, stage, examples, url, snippet, views, likes, comments, timestamp, leaderboard_rank)
-                    VALUES (:name, :summary, :score, :stage, :examples, :url, :snippet, :views, :likes, :comments, :timestamp, :leaderboard_rank)
-                    ON CONFLICT(name) DO UPDATE SET
-                        summary=excluded.summary,
-                        score=excluded.score,
-                        stage=excluded.stage,
-                        examples=excluded.examples,
-                        url=excluded.url,
-                        snippet=excluded.snippet,
-                        views=excluded.views,
-                        likes=excluded.likes,
-                        comments=excluded.comments,
-                        timestamp=excluded.timestamp,
-                        leaderboard_rank=excluded.leaderboard_rank
-                """, trend_data)
-                print(f"✅ Saved trend: {trend['name']}")
-            except sqlite3.OperationalError as e:
-                print(f"❌ DB Error for trend '{trend['name']}': {e}")
+        trend_data = {
+            "name": trend["name"],
+            "summary": summary,
+            "score": score,
+            "stage": stage,
+            "examples": str(examples),
+            "url": trend.get("url"),
+            "snippet": trend.get("snippet"),
+            "views": trend.get("views"),
+            "likes": trend.get("likes"),
+            "comments": trend.get("comments"),
+            "timestamp": trend.get("timestamp"),
+            "leaderboard_rank": trend.get("leaderboard_rank")
+        }
 
+        try:
+            cursor.execute("""
+                INSERT INTO trends (name, summary, score, stage, examples, url, snippet, views, likes, comments, timestamp, leaderboard_rank)
+                VALUES (:name, :summary, :score, :stage, :examples, :url, :snippet, :views, :likes, :comments, :timestamp, :leaderboard_rank)
+                ON CONFLICT(name) DO UPDATE SET
+                    summary=excluded.summary,
+                    score=excluded.score,
+                    stage=excluded.stage,
+                    examples=excluded.examples,
+                    url=excluded.url,
+                    snippet=excluded.snippet,
+                    views=excluded.views,
+                    likes=excluded.likes,
+                    comments=excluded.comments,
+                    timestamp=excluded.timestamp,
+                    leaderboard_rank=excluded.leaderboard_rank
+            """, trend_data)
+            print(f"✅ Saved trend: {trend['name']}")
+        except sqlite3.OperationalError as e:
+            print(f"❌ DB Error for trend '{trend['name']}': {e}")
+
+        # Always log to history
         history_cursor.execute("""
             INSERT INTO trend_history (name, timestamp, score, stage, views, likes, comments, leaderboard_rank)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -248,9 +252,20 @@ def run_bot():
     print("✅ All done!")
 
 if __name__ == "__main__":
+    print("🚀 Running MysticBot for the first time...")
     run_bot()
-    scheduler = BlockingScheduler()
-    scheduler.add_job(run_bot, 'interval', hours=1)
-    print("🔁 Scheduler started. Scraping every hour.")
+
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(run_bot, 'interval', minutes=30)
     scheduler.start()
+
+    print("⏱️ Bot will run every 30 minutes in the background.")
+
+    try:
+        # Keep the script alive
+        while True:
+            time.sleep(60)
+    except (KeyboardInterrupt, SystemExit):
+        print("🛑 Shutting down...")
+        scheduler.shutdown()
 
