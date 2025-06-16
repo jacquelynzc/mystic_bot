@@ -1,11 +1,12 @@
 import os
 import sqlite3
 import time
+import shutil
 from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
 from playwright.sync_api import sync_playwright, TimeoutError
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # Load environment variables
 load_dotenv()
@@ -21,6 +22,17 @@ client = OpenAI(api_key=openai_api_key)
 BASE_URL = "https://ads.tiktok.com/business/creativecenter/inspiration/popular/hashtag/pc/en"
 BRAVE_EXECUTABLE_PATH = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 USER_DATA_DIR = "/tmp/mystic_brave_profile"
+
+def clear_browser_cache(user_data_dir):
+    cache_path = os.path.join(user_data_dir, "Default", "Cache")
+    code_cache_path = os.path.join(user_data_dir, "Default", "Code Cache")
+    for path in [cache_path, code_cache_path]:
+        if os.path.exists(path):
+            try:
+                shutil.rmtree(path)
+                print(f"🧹 Cleared browser cache: {path}")
+            except Exception as e:
+                print(f"⚠️ Failed to clear cache at {path}: {e}")
 
 def ensure_db_schema(cursor):
     cursor.execute("""
@@ -84,9 +96,10 @@ def scroll_until_loaded(page, target_count=100, max_scrolls=60, delay=1.05):
             continue
 
 def scrape_tiktok_creative_center():
-    print(f"🌐 Scraping TikTok Creative Center... (headless=False)")
+    print(f"🌐 Scraping TikTok Creative Center... (persistent login, fresh cache)")
     trends = []
     try:
+        clear_browser_cache(USER_DATA_DIR)
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(
                 user_data_dir=USER_DATA_DIR,
@@ -97,7 +110,7 @@ def scrape_tiktok_creative_center():
             page = context.new_page()
             print("🌍 Navigating to TikTok Creative Center...")
             page.goto(BASE_URL, timeout=60000)
-            print("⌛ Waiting for page to load...")
+            page.reload()
             page.wait_for_timeout(3000)
 
             print("🔄 Scrolling to load all trends...")
@@ -114,6 +127,8 @@ def scrape_tiktok_creative_center():
                     full_url = f"https://ads.tiktok.com{url}" if url else ""
                     rank = card.locator(".RankingStatus_rankingIndex__ZMDrH").inner_text(timeout=3000).strip()
 
+                    print(f"🔍 #{rank}: {title} — {views}")
+
                     trends.append({
                         "name": title,
                         "url": full_url,
@@ -124,11 +139,12 @@ def scrape_tiktok_creative_center():
                         "timestamp": datetime.utcnow().isoformat(),
                         "leaderboard_rank": int(rank) if rank.isdigit() else None
                     })
-                    print(f"✅ Parsed trend: {title} (Rank {rank})")
                 except Exception as e:
                     print(f"⚠️ Error parsing trend card: {e}")
 
+            page.close()
             context.close()
+
     except Exception as e:
         print(f"❌ Browser scraping error: {e}")
 
@@ -177,54 +193,50 @@ def save_trends_to_db(trends, cursor, conn):
         score = score_trend(trend["name"])
         stage = determine_stage(score)
 
-        # Check if summary already exists
-        cursor.execute("SELECT summary FROM trends WHERE name = ?", (trend["name"],))
+        cursor.execute("SELECT snippet FROM trends WHERE name = ?", (trend["name"],))
         existing = cursor.fetchone()
-        summary_exists = existing and existing[0] and len(existing[0].strip()) > 0
+        is_unchanged = existing and existing[0] == trend.get("snippet")
 
-        if summary_exists:
-            print(f"⏩ Skipping OpenAI for existing trend: {trend['name']}")
-            summary, examples = existing[0], []
+        if is_unchanged:
+            print(f"⏩ Skipping unchanged trend: {trend['name']}")
         else:
             summary, examples = generate_summary_and_examples(trend["name"], trend.get("snippet", ""))
+            trend_data = {
+                "name": trend["name"],
+                "summary": summary,
+                "score": score,
+                "stage": stage,
+                "examples": str(examples),
+                "url": trend.get("url"),
+                "snippet": trend.get("snippet"),
+                "views": trend.get("views"),
+                "likes": trend.get("likes"),
+                "comments": trend.get("comments"),
+                "timestamp": trend.get("timestamp"),
+                "leaderboard_rank": trend.get("leaderboard_rank")
+            }
 
-        trend_data = {
-            "name": trend["name"],
-            "summary": summary,
-            "score": score,
-            "stage": stage,
-            "examples": str(examples),
-            "url": trend.get("url"),
-            "snippet": trend.get("snippet"),
-            "views": trend.get("views"),
-            "likes": trend.get("likes"),
-            "comments": trend.get("comments"),
-            "timestamp": trend.get("timestamp"),
-            "leaderboard_rank": trend.get("leaderboard_rank")
-        }
+            try:
+                cursor.execute("""
+                    INSERT INTO trends (name, summary, score, stage, examples, url, snippet, views, likes, comments, timestamp, leaderboard_rank)
+                    VALUES (:name, :summary, :score, :stage, :examples, :url, :snippet, :views, :likes, :comments, :timestamp, :leaderboard_rank)
+                    ON CONFLICT(name) DO UPDATE SET
+                        summary=excluded.summary,
+                        score=excluded.score,
+                        stage=excluded.stage,
+                        examples=excluded.examples,
+                        url=excluded.url,
+                        snippet=excluded.snippet,
+                        views=excluded.views,
+                        likes=excluded.likes,
+                        comments=excluded.comments,
+                        timestamp=excluded.timestamp,
+                        leaderboard_rank=excluded.leaderboard_rank
+                """, trend_data)
+                print(f"✅ Saved trend: {trend['name']}")
+            except sqlite3.OperationalError as e:
+                print(f"❌ DB Error for trend '{trend['name']}': {e}")
 
-        try:
-            cursor.execute("""
-                INSERT INTO trends (name, summary, score, stage, examples, url, snippet, views, likes, comments, timestamp, leaderboard_rank)
-                VALUES (:name, :summary, :score, :stage, :examples, :url, :snippet, :views, :likes, :comments, :timestamp, :leaderboard_rank)
-                ON CONFLICT(name) DO UPDATE SET
-                    summary=excluded.summary,
-                    score=excluded.score,
-                    stage=excluded.stage,
-                    examples=excluded.examples,
-                    url=excluded.url,
-                    snippet=excluded.snippet,
-                    views=excluded.views,
-                    likes=excluded.likes,
-                    comments=excluded.comments,
-                    timestamp=excluded.timestamp,
-                    leaderboard_rank=excluded.leaderboard_rank
-            """, trend_data)
-            print(f"✅ Saved trend: {trend['name']}")
-        except sqlite3.OperationalError as e:
-            print(f"❌ DB Error for trend '{trend['name']}': {e}")
-
-        # Always log to history
         history_cursor.execute("""
             INSERT INTO trend_history (name, timestamp, score, stage, views, likes, comments, leaderboard_rank)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -252,20 +264,9 @@ def run_bot():
     print("✅ All done!")
 
 if __name__ == "__main__":
-    print("🚀 Running MysticBot for the first time...")
     run_bot()
-
     scheduler = BackgroundScheduler()
     scheduler.add_job(run_bot, 'interval', minutes=30)
+    print("🔁 Scheduler started. Scraping every 30 minutes.")
     scheduler.start()
-
-    print("⏱️ Bot will run every 30 minutes in the background.")
-
-    try:
-        # Keep the script alive
-        while True:
-            time.sleep(60)
-    except (KeyboardInterrupt, SystemExit):
-        print("🛑 Shutting down...")
-        scheduler.shutdown()
 
